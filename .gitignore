@@ -1,0 +1,22 @@
+# Local state — never commit
+*.tfstate
+*.tfstate.backup
+*.tfstate.lock.info
+
+# Plan files — contain sensitive output
+tfplan.*
+
+# Provider plugins — large, auto-downloaded
+.terraform/
+.terraform.lock.hcl
+
+# Crash logs
+crash.log
+crash.*.log
+
+# Variable files that may contain secrets
+*.auto.tfvars
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
