@@ -35,41 +35,12 @@ variable "default_action" {
 }
 
 # ──────────────────────────────────────────────
-# IP Sets
-# ──────────────────────────────────────────────
-variable "ip_sets" {
-  description = "Map of IP sets to create/manage"
-  type = map(object({
-    description        = optional(string, "")
-    ip_address_version = string # IPV4 or IPV6
-    addresses          = list(string)
-    tags               = optional(map(string), {})
-  }))
-  default = {}
-}
-
-# ──────────────────────────────────────────────
-# Regex Pattern Sets
-# ──────────────────────────────────────────────
-variable "regex_pattern_sets" {
-  description = "Map of regex pattern sets to create/manage"
-  type = map(object({
-    description = optional(string, "")
-    patterns    = list(string)
-    tags        = optional(map(string), {})
-  }))
-  default = {}
-}
-
-# ──────────────────────────────────────────────
 # Rules
 # ──────────────────────────────────────────────
 variable "rules" {
-  description = "List of WAF rules to attach to the Web ACL"
+  description = "List of WAF rules to attach to the Web ACL. Rule statements that reference IP sets or regex pattern sets must pass the ARN obtained from a data source in the calling environment."
   type        = any
   default     = []
-  # Each rule is a complex object; kept as 'any' to support all AWS WAF rule types.
-  # See docs/RULE_SCHEMA.md for the expected structure.
 }
 
 # ──────────────────────────────────────────────

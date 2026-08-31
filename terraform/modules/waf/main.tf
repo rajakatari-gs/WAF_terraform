@@ -1,7 +1,10 @@
 # ============================================================
 # WAF Module — main.tf
-# Manages: IP Sets, Regex Pattern Sets, Web ACL, Associations,
-#          and Logging Configuration.
+# Manages: Web ACL, Associations, and Logging Configuration.
+#
+# IP sets and regex pattern sets are managed exclusively via
+# the AWS Console. Use data sources in each environment's
+# main.tf to look them up and pass their ARNs into rules.
 #
 # PRODUCTION-SAFETY NOTE:
 #   This module is import-only on first run.
@@ -17,41 +20,6 @@ terraform {
       version = ">= 5.0"
     }
   }
-}
-
-# ──────────────────────────────────────────────
-# IP Sets
-# ──────────────────────────────────────────────
-resource "aws_wafv2_ip_set" "this" {
-  for_each = var.ip_sets
-
-  name               = each.key
-  description        = each.value.description
-  scope              = var.scope
-  ip_address_version = each.value.ip_address_version
-  addresses          = each.value.addresses
-
-  tags = merge(var.tags, each.value.tags)
-}
-
-# ──────────────────────────────────────────────
-# Regex Pattern Sets
-# ──────────────────────────────────────────────
-resource "aws_wafv2_regex_pattern_set" "this" {
-  for_each = var.regex_pattern_sets
-
-  name        = each.key
-  description = each.value.description
-  scope       = var.scope
-
-  dynamic "regular_expression" {
-    for_each = each.value.patterns
-    content {
-      regex_string = regular_expression.value
-    }
-  }
-
-  tags = merge(var.tags, each.value.tags)
 }
 
 # ──────────────────────────────────────────────

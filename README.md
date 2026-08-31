@@ -2,6 +2,8 @@
 
 Production-safe migration and management of AWS WAF rules using Terraform IaC across four environments: **STAGE**, **US1-PROD**, **US2-PROD**, and **EU-PROD**.
 
+> **Ownership split:** IP sets and regex pattern sets are managed exclusively via the **AWS Console** and are never created, modified, or imported by Terraform. Terraform reads them at plan time using `data` sources and passes their ARNs into WAF rule statements. Only the **Web ACL**, its **associations**, and its **logging configuration** are owned by Terraform.
+
 ---
 
 ## Table of Contents
@@ -74,9 +76,9 @@ terraform-nginx-frontend/
 └── terraform/
     ├── modules/
     │   └── waf/
-    │       ├── main.tf                ← Manages all WAF resources
+    │       ├── main.tf                ← Manages Web ACL, associations, logging
     │       ├── variables.tf           ← All input variables with validation
-    │       ├── outputs.tf             ← Web ACL ARN/ID, IP Set ARNs
+    │       ├── outputs.tf             ← Web ACL ARN/ID/capacity
     │       └── imports.tf             ← Commented import block examples
     ├── environments/
     │   ├── stage/
@@ -223,9 +225,28 @@ Open the Web ACL JSON and understand every field. This is your source of truth.
 
 Open `terraform/environments/<env>/main.tf` and fill it in to match the backup exactly.
 
+**Key principle — IP sets and regex pattern sets:**
+These resources live in the AWS Console and are not touched by Terraform. To reference them in a rule statement, add a `data` source lookup in the environment's `main.tf`. Because data sources are evaluated independently (before the module call), their ARNs can be passed directly into `rules` with no dependency cycle.
+
 **Example — translating the JSON backup to HCL:**
 
 ```hcl
+# ── Console-managed Regex Pattern Sets ───────────────────────
+# name + id come from: AWS Console → WAF → Regex pattern sets
+# The id is the UUID shown in the Console (also in regex_pattern_sets.json → Id).
+data "aws_wafv2_regex_pattern_set" "xss_custom_latest" {
+  name  = "XSS_CUSTOM_LATEST"
+  id    = "REPLACE_WITH_<ENV>_XSS_CUSTOM_LATEST_ID"
+  scope = "REGIONAL"
+}
+
+# ── Console-managed IP Sets ───────────────────────────────────
+# data "aws_wafv2_ip_set" "example_ip_set" {
+#   name  = "EXAMPLE_IP_SET"
+#   id    = "REPLACE_WITH_IP_SET_ID"
+#   scope = "REGIONAL"
+# }
+
 module "waf" {
   source = "../../modules/waf"
 
@@ -240,10 +261,11 @@ module "waf" {
   }
 
   rules = [
+    # ── Managed rule group example ────────────────────────
     {
-      name     = "AWSManagedRulesCommonRuleSet"   # exact name from JSON
-      priority = 1                                # exact priority from JSON
-      override_action = { none = {} }             # OverrideAction: None
+      name            = "AWSManagedRulesCommonRuleSet"
+      priority        = 1
+      override_action = { none = {} }
       statement = {
         managed_rule_group_statement = {
           name        = "AWSManagedRulesCommonRuleSet"
@@ -255,15 +277,54 @@ module "waf" {
         metric_name                = "AWSManagedRulesCommonRuleSet"
         sampled_requests_enabled   = true
       }
-    }
-  ]
+    },
 
-  ip_sets = {
-    "AllowlistedIPs" = {
-      ip_address_version = "IPV4"
-      addresses          = ["10.0.0.0/8", "192.168.1.0/24"]  # from ip_set_...json
-    }
-  }
+    # ── Regex pattern set reference rule example ──────────
+    # ARN comes from the data source above — no placeholder needed.
+    {
+      name     = "XSS_CUSTOM_LATEST"
+      priority = 24
+      action   = { count = {} }
+      statement = {
+        or_statement = {
+          statements = [
+            {
+              regex_pattern_set_reference_statement = {
+                arn            = data.aws_wafv2_regex_pattern_set.xss_custom_latest.arn
+                field_to_match = { all_query_arguments = {} }
+                text_transformation = [{ priority = 0, type = "URL_DECODE_UNI" }]
+              }
+            },
+            {
+              regex_pattern_set_reference_statement = {
+                arn = data.aws_wafv2_regex_pattern_set.xss_custom_latest.arn
+                field_to_match = {
+                  json_body = {
+                    match_pattern     = { all = {} }
+                    match_scope       = "ALL"
+                    oversize_handling = "CONTINUE"
+                  }
+                }
+                text_transformation = [{ priority = 0, type = "URL_DECODE_UNI" }]
+              }
+            },
+            {
+              regex_pattern_set_reference_statement = {
+                arn            = data.aws_wafv2_regex_pattern_set.xss_custom_latest.arn
+                field_to_match = { uri_path = {} }
+                text_transformation = [{ priority = 0, type = "URL_DECODE_UNI" }]
+              }
+            },
+          ]
+        }
+      }
+      visibility_config = {
+        cloudwatch_metrics_enabled = true
+        metric_name                = "CUSTOM_XSS"
+        sampled_requests_enabled   = true
+      }
+    },
+  ]
 
   association_resource_arns = [
     "arn:aws:elasticloadbalancing:us-east-1:123456789012:loadbalancer/app/stage-alb/xxxx"
@@ -286,6 +347,8 @@ module "waf" {
 
 Open `terraform/environments/<env>/imports.tf` and fill in the IDs from the backup JSON.
 
+Only the Web ACL, its associations, and its logging configuration are imported. IP sets and regex pattern sets are **not** imported — they stay console-managed and are read via `data` sources.
+
 ```hcl
 # Import ID format: <name>/<id>/<scope>
 # The ID comes from web_acls.json → WebACLs[].Id
@@ -293,11 +356,6 @@ Open `terraform/environments/<env>/imports.tf` and fill in the IDs from the back
 import {
   to = module.waf.aws_wafv2_web_acl.this
   id = "gainsight-waf-stage/abc12345-xxxx-xxxx-xxxx-xxxxxxxxxxxx/REGIONAL"
-}
-
-import {
-  to = module.waf.aws_wafv2_ip_set.this["AllowlistedIPs"]
-  id = "AllowlistedIPs/def67890-xxxx-xxxx-xxxx-xxxxxxxxxxxx/REGIONAL"
 }
 
 import {
@@ -311,7 +369,11 @@ import {
 }
 ```
 
-> The `id` values come directly from the backup JSON files — never guess them.
+Before running `terraform plan`, fill in the `id` field of each `data` source in `main.tf`. The UUID is available in:
+- AWS Console → WAF → Regex pattern sets → click the set → **ID** field
+- Or from the backup: `regex_pattern_sets.json → [].Id`
+
+> The `id` values come directly from the AWS Console or backup JSON — never guess them.
 
 ---
 
@@ -451,37 +513,61 @@ Verify in AWS Console / CloudWatch metrics
 Apply to us1-prod → us2-prod → eu-prod
 ```
 
-**Example — adding a new blocked IP:**
+**Example — adding a rule referencing a new console-managed regex pattern set:**
 
 ```hcl
-# In environments/us1-prod/main.tf
-ip_sets = {
-  "BlocklistedIPs" = {
-    ip_address_version = "IPV4"
-    addresses = [
-      "1.2.3.4/32",
-      "5.6.7.8/32",   # ← new IP added here
-    ]
-  }
+# 1. Create/update the regex pattern set in the AWS Console.
+# 2. Add or update the data source in environments/<env>/main.tf:
+data "aws_wafv2_regex_pattern_set" "sqli_custom" {
+  name  = "SQLI_CUSTOM"
+  id    = "<UUID from AWS Console>"
+  scope = "REGIONAL"
 }
+
+# 3. Add the rule that references it:
+rules = [
+  {
+    name     = "SQLI_CUSTOM"
+    priority = 25
+    action   = { count = {} }
+    statement = {
+      regex_pattern_set_reference_statement = {
+        arn            = data.aws_wafv2_regex_pattern_set.sqli_custom.arn
+        field_to_match = { body = { oversize_handling = "CONTINUE" } }
+        text_transformation = [{ priority = 0, type = "URL_DECODE_UNI" }]
+      }
+    }
+    visibility_config = {
+      cloudwatch_metrics_enabled = true
+      metric_name                = "CUSTOM_SQLI"
+      sampled_requests_enabled   = true
+    }
+  },
+]
 ```
 
-`terraform plan` will show only that single IP being added. Nothing else changes.
+`terraform plan` will show only the new rule being added. Nothing else changes.
 
 ---
 
 ## Module Architecture
 
 ```
+AWS Console
+        │  manages (never touched by Terraform)
+        ▼
+aws_wafv2_ip_set
+aws_wafv2_regex_pattern_set
+
+        │  data sources read their ARNs at plan time
+        ▼
 environments/stage/main.tf
-        │  calls with environment-specific values
+        │  passes ARNs into rule statements, then calls
         ▼
 modules/waf/main.tf          ← shared logic, maintained in one place
         │  creates/manages
         ▼
 aws_wafv2_web_acl
-aws_wafv2_ip_set
-aws_wafv2_regex_pattern_set
 aws_wafv2_web_acl_association
 aws_wafv2_web_acl_logging_configuration
 ```
@@ -507,16 +593,22 @@ The module code is shared across all four environments. Each environment only pr
 
 ## Import ID Reference
 
+Only Terraform-managed resources have import blocks. IP sets and regex pattern sets are console-managed and use data source lookups instead.
+
 | Resource | Import ID Format | Example |
 |----------|-----------------|---------|
 | `aws_wafv2_web_acl` | `<name>/<id>/<scope>` | `my-waf/abc123/REGIONAL` |
-| `aws_wafv2_ip_set` | `<name>/<id>/<scope>` | `AllowedIPs/def456/REGIONAL` |
-| `aws_wafv2_regex_pattern_set` | `<name>/<id>/<scope>` | `BadPatterns/ghi789/REGIONAL` |
-| `aws_wafv2_rule_group` | `<name>/<id>/<scope>` | `CustomRules/jkl012/REGIONAL` |
 | `aws_wafv2_web_acl_association` | `<resource_arn>/<web_acl_arn>` | `arn:aws:elasticloadbalancing:.../arn:aws:wafv2:...` |
 | `aws_wafv2_web_acl_logging_configuration` | `<web_acl_arn>` | `arn:aws:wafv2:us-east-1:123456789012:regional/webacl/...` |
 
-Find all IDs in the backup JSON files under `terraform/backups/<env>/`.
+**Data source lookup reference (console-managed resources):**
+
+| Resource | Required Fields | Where to Find the ID |
+|----------|----------------|----------------------|
+| `data "aws_wafv2_regex_pattern_set"` | `name`, `id`, `scope` | Console → WAF → Regex pattern sets → click set → **ID** field |
+| `data "aws_wafv2_ip_set"` | `name`, `id`, `scope` | Console → WAF → IP sets → click set → **ID** field |
+
+Find Web ACL IDs in the backup JSON files under `terraform/backups/<env>/`.
 
 ---
 
@@ -527,8 +619,10 @@ Find all IDs in the backup JSON files under `terraform/backups/<env>/`.
 | Plan shows rule action change (ALLOW → BLOCK) | HCL action does not match backup | Fix `main.tf` — match the backup JSON exactly |
 | Plan shows rule priority change | Priority number differs | Fix `main.tf` — use exact priority from backup JSON |
 | Plan wants to recreate the Web ACL | Import ID is wrong | Check `imports.tf` — verify the ID from backup JSON |
-| Plan wants to recreate an IP set | IP list or import ID differs | Compare `main.tf` addresses with `ip_set_*.json` |
-| Resource count mismatch in validate script | A resource exists in AWS but not in `imports.tf` | Add missing import blocks and re-apply |
+| Data source error: regex pattern set not found | Wrong `name` or `id` in `data` block | Verify name + UUID from Console → WAF → Regex pattern sets |
+| Data source error: IP set not found | Wrong `name` or `id` in `data` block | Verify name + UUID from Console → WAF → IP sets |
+| Rule shows ARN as unknown/null | Data source `id` is a placeholder, not replaced | Fill in the real UUID from AWS Console before running plan |
+| Resource count mismatch in validate script | A Web ACL resource exists in AWS but not in `imports.tf` | Add the missing import block and re-apply |
 | `terraform apply` fails during import | Resource ID in `imports.tf` is wrong | Verify the ID directly from backup JSON |
 | `terraform init` fails | S3 bucket or DynamoDB table not found | Update `provider.tf` with correct bucket/table names |
 
@@ -559,7 +653,7 @@ Find all IDs in the backup JSON files under `terraform/backups/<env>/`.
 | Terraform wants to delete a Web ACL | Stop — import ID is wrong. Do not apply. Fix `imports.tf`. |
 | Rules are missing from Terraform state | Add missing rules to `main.tf`, re-run plan |
 | Rule priorities differ | Update priorities in `main.tf` to match AWS exactly |
-| IP set shows replacement (`-/+`) | Address list or ID differs. Fix `main.tf` and `imports.tf`. |
+| Regex pattern set or IP set not found by data source | Wrong name or UUID in `data` block — verify from AWS Console |
 | Logging config mismatch | Match `logging_configuration` block exactly to `logging_configurations.json` |
 
 > Do not use destructive Terraform operations (`terraform destroy`, `terraform state rm`) without explicit approval from a senior engineer.
@@ -578,7 +672,8 @@ Complete every item before running `terraform apply` against any production envi
 - [ ] No rule action changes (ALLOW, BLOCK, COUNT)
 - [ ] No rule priority changes
 - [ ] No Web ACL recreation (`-/+` replace)
-- [ ] No IP set recreation (`-/+` replace)
+- [ ] All `data` source `id` fields filled with real UUIDs (no `REPLACE_WITH_...` strings)
+- [ ] Data source lookups resolve without error (`terraform plan` completes)
 - [ ] No association changes
 - [ ] No logging configuration changes
 - [ ] Plan output attached to the PR or change ticket

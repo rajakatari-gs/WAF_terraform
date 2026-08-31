@@ -1,19 +1,17 @@
 # ============================================================
-# imports.tf  — Terraform 1.6+ import blocks
+# imports.tf  — Terraform 1.6+ import block examples
+#
+# IP sets and regex pattern sets are managed via the AWS Console
+# and are NOT imported into Terraform state. Only the Web ACL,
+# its associations, and its logging configuration are managed here.
 #
 # HOW TO USE:
-#   1. Discover the live resource IDs using the scripts in
-#      terraform/scripts/discover_waf.sh
-#   2. Uncomment and fill in the correct id values below.
-#   3. Run `terraform plan` — it must show 0 changes before
-#      running `terraform apply` for the first time.
+#   Uncomment and fill the relevant blocks in each environment's
+#   own imports.tf (terraform/environments/<env>/imports.tf).
 #
 # Import ID format per resource type:
-#   aws_wafv2_web_acl          → <name>/<id>/<scope>
-#   aws_wafv2_ip_set           → <name>/<id>/<scope>
-#   aws_wafv2_regex_pattern_set → <name>/<id>/<scope>
-#   aws_wafv2_rule_group       → <name>/<id>/<scope>
-#   aws_wafv2_web_acl_association → <resource_arn>/<web_acl_arn>
+#   aws_wafv2_web_acl                       → <name>/<id>/REGIONAL
+#   aws_wafv2_web_acl_association           → <resource_arn>/<web_acl_arn>
 #   aws_wafv2_web_acl_logging_configuration → <web_acl_arn>
 # ============================================================
 
@@ -21,18 +19,6 @@
 # import {
 #   to = aws_wafv2_web_acl.this
 #   id = "<WEB_ACL_NAME>/<WEB_ACL_ID>/REGIONAL"
-# }
-
-# ── Example: IP Set ────────────────────────────────────────
-# import {
-#   to = aws_wafv2_ip_set.this["<IP_SET_NAME>"]
-#   id = "<IP_SET_NAME>/<IP_SET_ID>/REGIONAL"
-# }
-
-# ── Example: Regex Pattern Set ────────────────────────────
-# import {
-#   to = aws_wafv2_regex_pattern_set.this["<PATTERN_SET_NAME>"]
-#   id = "<PATTERN_SET_NAME>/<PATTERN_SET_ID>/REGIONAL"
 # }
 
 # ── Example: Web ACL Association ──────────────────────────
