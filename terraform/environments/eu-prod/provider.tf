@@ -1,0 +1,29 @@
+terraform {
+  required_version = ">= 1.6"
+
+  required_providers {
+    aws = {
+      source  = "hashicorp/aws"
+      version = ">= 5.0"
+    }
+  }
+
+  backend "s3" {
+    bucket         = "<YOUR_S3_BUCKET>"
+    key            = "waf/eu-prod/terraform.tfstate"
+    region         = "eu-west-1"
+    encrypt        = true
+    dynamodb_table = "<YOUR_DYNAMODB_TABLE>"
+  }
+}
+
+provider "aws" {
+  region = var.aws_region
+
+  default_tags {
+    tags = {
+      ManagedBy   = "terraform"
+      Environment = "eu-prod"
+    }
+  }
+}
