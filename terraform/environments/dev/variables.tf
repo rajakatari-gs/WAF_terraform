@@ -1,7 +1,7 @@
 variable "aws_region" {
-  description = "AWS region for EU-PROD environment"
+  description = "AWS region for dev environment"
   type        = string
-  default     = "eu-west-1"
+  default     = "us-east-1"
 }
 
 variable "regex_pattern_sets" {

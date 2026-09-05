@@ -1,6 +1,6 @@
 # ============================================================
-# STAGE — Import Blocks (Terraform 1.6+)
-# Run scripts/discover_waf.sh stage us-east-1 <profile> first,
+# DEV — Import Blocks (Terraform 1.6+)
+# Run scripts/discover_waf.sh dev us-east-1 <profile> first,
 # then fill in the UUIDs from the backup JSON files.
 #
 # Uncomment each block and replace placeholders with real IDs,
@@ -10,7 +10,7 @@
 # ── Web ACL ────────────────────────────────────────────────
 # import {
 #   to = module.waf.aws_wafv2_web_acl.this
-#   id = "gainsight-waf-stage/<WEB_ACL_UUID>/REGIONAL"
+#   id = "gainsight-waf-dev/<WEB_ACL_UUID>/REGIONAL"
 # }
 
 # ── Regex Pattern Sets ────────────────────────────────────

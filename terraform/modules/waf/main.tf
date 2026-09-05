@@ -1,13 +1,19 @@
 # ============================================================
 # WAF Module — main.tf
-# Manages: Web ACL, Associations, and Logging Configuration.
+# Manages: IP Sets, Regex Pattern Sets, Web ACL, Associations,
+#          and Logging Configuration.
 #
-# IP sets and regex pattern sets are managed exclusively via
-# the AWS Console. Use data sources in each environment's
-# main.tf to look them up and pass their ARNs into rules.
+# Rule types handled by this module:
+#   1. ip_set_rules              — rules referencing managed IP sets
+#   2. regex_pattern_set_rules   — rules referencing managed regex pattern sets
+#   3. rules                     — freeform rules (managed rule groups, rate-based, etc.)
+#
+# The module resolves IP set and regex pattern set ARNs internally so that
+# callers never need to reference module outputs inside the same module call
+# (which would create a Terraform dependency cycle).
 #
 # PRODUCTION-SAFETY NOTE:
-#   This module is import-only on first run.
+#   On first run this module is import-only.
 #   Do NOT run `terraform apply` against production until
 #   `terraform plan` shows zero unintended changes.
 # ============================================================
@@ -20,6 +26,116 @@ terraform {
       version = ">= 5.0"
     }
   }
+}
+
+# ──────────────────────────────────────────────
+# IP Sets
+# ──────────────────────────────────────────────
+resource "aws_wafv2_ip_set" "this" {
+  for_each = var.ip_sets
+
+  name               = each.key
+  description        = each.value.description
+  scope              = var.scope
+  ip_address_version = each.value.ip_address_version
+  addresses          = each.value.addresses
+
+  tags = merge(var.tags, each.value.tags)
+}
+
+# ──────────────────────────────────────────────
+# Regex Pattern Sets
+# ──────────────────────────────────────────────
+resource "aws_wafv2_regex_pattern_set" "this" {
+  for_each = var.regex_pattern_sets
+
+  name        = each.key
+  description = each.value.description
+  scope       = var.scope
+
+  dynamic "regular_expression" {
+    for_each = each.value.patterns
+    content {
+      regex_string = regular_expression.value
+    }
+  }
+
+  tags = merge(var.tags, each.value.tags)
+}
+
+# ──────────────────────────────────────────────
+# Internal rule construction
+# ARNs are resolved here so callers don't need to
+# reference module outputs inside the same call.
+# ──────────────────────────────────────────────
+locals {
+  # Common field_to_match structures (empty-content blocks)
+  _ftm = {
+    "ALL_QUERY_ARGUMENTS" = { all_query_arguments = {} }
+    "URI_PATH"            = { uri_path = {} }
+    "QUERY_STRING"        = { query_string = {} }
+    "METHOD"              = { method = {} }
+  }
+
+  # Rules that reference internally-managed regex pattern sets.
+  # Supports any number of fields_to_match; >1 becomes an or_statement.
+  _regex_pattern_set_rules = [
+    for r in var.regex_pattern_set_rules : {
+      name     = r.name
+      priority = r.priority
+      action   = { (r.action) = {} }
+      statement = length(r.fields_to_match) == 1 ? {
+        regex_pattern_set_reference_statement = {
+          arn = aws_wafv2_regex_pattern_set.this[r.regex_pattern_set_key].arn
+          field_to_match = r.fields_to_match[0] == "JSON_BODY" ? {
+            json_body = {
+              match_pattern     = { all = {} }
+              match_scope       = r.json_body_match_scope
+              oversize_handling = r.json_body_oversize_handling
+            }
+          } : local._ftm[r.fields_to_match[0]]
+          text_transformation = r.text_transformations
+        }
+      } : {
+        or_statement = {
+          statements = [
+            for f in r.fields_to_match : {
+              regex_pattern_set_reference_statement = {
+                arn = aws_wafv2_regex_pattern_set.this[r.regex_pattern_set_key].arn
+                field_to_match = f == "JSON_BODY" ? {
+                  json_body = {
+                    match_pattern     = { all = {} }
+                    match_scope       = r.json_body_match_scope
+                    oversize_handling = r.json_body_oversize_handling
+                  }
+                } : local._ftm[f]
+                text_transformation = r.text_transformations
+              }
+            }
+          ]
+        }
+      }
+      visibility_config = r.visibility_config
+    }
+  ]
+
+  # Rules that reference internally-managed IP sets.
+  _ip_set_rules = [
+    for r in var.ip_set_rules : {
+      name     = r.name
+      priority = r.priority
+      action   = { (r.action) = {} }
+      statement = {
+        ip_set_reference_statement = {
+          arn = aws_wafv2_ip_set.this[r.ip_set_key].arn
+        }
+      }
+      visibility_config = r.visibility_config
+    }
+  ]
+
+  # Final ordered rule list: ip_set → regex → freeform (var.rules)
+  all_rules = concat(local._ip_set_rules, local._regex_pattern_set_rules, var.rules)
 }
 
 # ──────────────────────────────────────────────
@@ -41,10 +157,8 @@ resource "aws_wafv2_web_acl" "this" {
     }
   }
 
-  # Rules are passed in as-is from environment configs.
-  # They are validated at the AWS API level during plan/apply.
   dynamic "rule" {
-    for_each = var.rules
+    for_each = local.all_rules
     content {
       name     = rule.value.name
       priority = rule.value.priority

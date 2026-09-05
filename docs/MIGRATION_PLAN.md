@@ -1,89 +1,76 @@
 # WAF Terraform Migration Plan
 
-## Ownership Split
+## Ownership Model
 
-| Resource | Managed by |
-|----------|-----------|
-| Web ACL | Terraform |
-| Web ACL Associations | Terraform |
-| Web ACL Logging Configuration | Terraform |
-| IP Sets | AWS Console only |
-| Regex Pattern Sets | AWS Console only |
-
-IP sets and regex pattern sets are **never** created, modified, imported, or destroyed by Terraform. Terraform reads their ARNs at plan time using `data` source lookups and passes them into rule statements.
+All WAF resources — Web ACLs, IP sets, and regex pattern sets — are **exclusively managed by Terraform**.  
+Direct AWS Console changes are not permitted. Console changes will be overwritten on the next `terraform apply`.
 
 ## Phase Sequence
 
+| Phase | Action | Risk |
+|-------|--------|------|
+| 1 | Run `discover_waf.sh` per environment | Read-only, zero risk |
+| 2 | Review backup JSON and fill `main.tf` to match exactly | Local files only, zero risk |
+| 3 | Fill import blocks in `imports.tf` with UUIDs from backups | Local files only, zero risk |
+| 4 | `terraform init && terraform validate` | Read-only, zero risk |
+| 5 | `terraform plan` — must show only imports, 0 changes | Read-only, zero risk |
+| 6 | `terraform apply` — imports resources into state only | State write only, no infra changes |
+| 7 | `terraform plan` again — must show 0 changes | Read-only, zero risk |
+| 8 | Repeat for each environment: dev → stage → us1-prod → us2-prod → eu-prod | |
+
+## Apply Order
+
 ```
-Discovery → Backup → TF Config + Data Sources → Import Web ACL → Plan Verify → Production Management
+dev → stage → us1-prod → us2-prod → eu-prod
 ```
 
-| Phase | Action | Safe? |
-|-------|--------|-------|
-| 1 | Run discover_waf.sh per environment | Read-only, 100% safe |
-| 2 | Review backup JSON files | Read-only, 100% safe |
-| 3 | Populate main.tf rules and imports.tf (Web ACL only) | Local files only, 100% safe |
-| 3a | Add `data` source blocks for each console-managed regex pattern set / IP set used by rules; fill `id` from AWS Console | Local files only, 100% safe |
-| 4 | terraform init + terraform plan (no apply) | Read-only, 100% safe |
-| 5 | terraform apply with import blocks | Writes state only, no infra changes |
-| 6 | Verify zero-change plan | Read-only, 100% safe |
-| 7 | Future changes via PR + plan review | Managed, auditable |
+Never apply to production without first validating in dev and stage.
 
-## Pre-Apply Checklist (run before any `terraform apply`)
+## Module Rule Types
+
+| Variable | Use Case |
+|----------|----------|
+| `regex_pattern_sets` + `regex_pattern_set_rules` | Rules matching regex patterns (XSS, SQLi, etc.) |
+| `ip_sets` + `ip_set_rules` | Rules based on source IP address |
+| `rules` | Managed rule groups, rate-based rules, geo-match, and any other rule type |
+
+## Pre-Apply Checklist
 
 - [ ] `discover_waf.sh` run and backup saved for this environment
 - [ ] `terraform validate` passes with 0 errors
-- [ ] `terraform plan` reviewed by at least one engineer
-- [ ] Plan shows **0 resources to add, change, or destroy**
-- [ ] No rule action changes (ALLOW → BLOCK, etc.)
+- [ ] `terraform plan` reviewed by at least two engineers
+- [ ] Plan shows **0 resources to add, change, or destroy** (only imports on first run)
+- [ ] No rule action changes (allow ↔ block ↔ count)
 - [ ] No rule priority changes
-- [ ] No Web ACL recreation
-- [ ] No association changes
-- [ ] All `data` source `id` fields contain real UUIDs (no `REPLACE_WITH_...` placeholders)
-- [ ] Data source lookups resolve without error during `terraform plan`
-- [ ] Change reviewed and approved by manager/tech lead
-- [ ] Rollback plan documented and ready
+- [ ] No Web ACL recreation (`-/+`)
+- [ ] No regex pattern set recreation (`-/+`)
+- [ ] No IP set recreation (`-/+`)
+- [ ] No association or logging changes
+- [ ] Plan output attached to the PR or change ticket
+- [ ] Change approved by manager/tech lead
+- [ ] dev + stage applied and validated before any production apply
+- [ ] AWS Console open to monitor WAF metrics during apply
 
 ## Environment → Region Mapping
 
-| Environment | AWS Region   | State Key               |
-|-------------|-------------|-------------------------|
-| stage       | us-east-1   | waf/stage/terraform.tfstate    |
-| us1-prod    | us-east-1   | waf/us1-prod/terraform.tfstate |
-| us2-prod    | us-west-2   | waf/us2-prod/terraform.tfstate |
-| eu-prod     | eu-west-1   | waf/eu-prod/terraform.tfstate  |
-
-## Data Source Pattern (for console-managed resources)
-
-When a WAF rule references a regex pattern set or IP set, add a `data` source block to the environment's `main.tf`:
-
-```hcl
-data "aws_wafv2_regex_pattern_set" "xss_custom_latest" {
-  name  = "XSS_CUSTOM_LATEST"
-  id    = "<UUID from AWS Console>"  # Console → WAF → Regex pattern sets → click set → ID
-  scope = "REGIONAL"
-}
-```
-
-Reference the ARN in the rule:
-```hcl
-arn = data.aws_wafv2_regex_pattern_set.xss_custom_latest.arn
-```
-
-No import block is needed — the resource is not in Terraform state.
+| Environment | AWS Region | State Key |
+|-------------|-----------|-----------|
+| dev | us-east-1 | `waf/dev/terraform.tfstate` |
+| stage | us-east-1 | `waf/stage/terraform.tfstate` |
+| us1-prod | us-east-1 | `waf/us1-prod/terraform.tfstate` |
+| us2-prod | us-west-2 | `waf/us2-prod/terraform.tfstate` |
+| eu-prod | eu-west-1 | `waf/eu-prod/terraform.tfstate` |
 
 ## Rollback
 
-If `terraform plan` shows unexpected changes **stop immediately** and do NOT apply.
+If `terraform plan` shows unexpected changes — **stop, do not apply**.
 
-Steps:
-1. Do not run `terraform apply`.
-2. Identify the diff between `terraform plan` output and the live AWS config.
-3. Correct the Terraform HCL in `main.tf` to match the live config exactly.
-4. Re-run `terraform plan` until it shows 0 changes.
-5. Only then proceed.
+1. Read the plan carefully.
+2. Fix `main.tf` to match the live configuration.
+3. Re-run `terraform plan` until it is clean.
+4. Only then proceed.
 
-If Terraform state was accidentally applied and resources changed:
-1. Use AWS Console to restore the previous Web ACL configuration.
-2. Use the backup JSON in `terraform/backups/<env>/` as the source of truth.
-3. Re-import the corrected resources.
+If an apply already ran and caused an unintended change:
+1. Open the backup JSON in `terraform/backups/<env>/` as the source of truth.
+2. Fix `main.tf` to restore the intended state.
+3. Run `terraform plan` to verify the fix, then apply.

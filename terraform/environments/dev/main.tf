@@ -1,6 +1,5 @@
 # ============================================================
-# US2-PROD — WAF Web ACL
-# PRODUCTION — Do not apply without a zero-change plan review.
+# DEV — WAF Web ACL
 # All WAF resources are managed exclusively through Terraform.
 # Do NOT make changes directly in the AWS Console.
 # ============================================================
@@ -8,16 +7,17 @@
 module "waf" {
   source = "../../modules/waf"
 
-  name        = "gainsight-waf-us2-prod"
-  description = "WAF Web ACL for US2 Production environment"
+  name        = "gainsight-waf-dev"
+  description = "WAF Web ACL for Dev environment"
   scope       = "REGIONAL"
-  environment = "us2-prod"
+  environment = "dev"
 
   default_action = "allow"
 
+  # ── Visibility Config ─────────────────────────────────────
   visibility_config = {
     cloudwatch_metrics_enabled = true
-    metric_name                = "gainsight-waf-us2-prod"
+    metric_name                = "gainsight-waf-dev"
     sampled_requests_enabled   = true
   }
 
@@ -29,13 +29,15 @@ module "waf" {
   rules                   = var.rules
 
   # ── ALB / API GW Associations ────────────────────────────
-  association_resource_arns = []
+  association_resource_arns = [
+    # "arn:aws:elasticloadbalancing:us-east-1:ACCOUNT_ID:loadbalancer/app/dev-alb/XXXX"
+  ]
 
   # ── Logging ──────────────────────────────────────────────
   logging_configuration = null
 
   tags = {
-    Environment = "us2-prod"
+    Environment = "dev"
     ManagedBy   = "terraform"
     Team        = "platform"
     Project     = "gainsight-waf"

@@ -1,26 +1,9 @@
 # ============================================================
 # EU-PROD — WAF Web ACL
-# PRODUCTION — Do not apply without a zero-change plan review
-#
-# IP sets and regex pattern sets are managed via the AWS Console.
-# Use data sources below to look them up by name + ID, then
-# reference their ARNs directly in rule statements.
+# PRODUCTION — Do not apply without a zero-change plan review.
+# All WAF resources are managed exclusively through Terraform.
+# Do NOT make changes directly in the AWS Console.
 # ============================================================
-
-# ── Console-managed Regex Pattern Sets ───────────────────────
-# Uncomment and fill after running: scripts/discover_waf.sh eu-prod
-# data "aws_wafv2_regex_pattern_set" "xss_custom_latest" {
-#   name  = "XSS_CUSTOM_LATEST"
-#   id    = "REPLACE_WITH_EU_PROD_XSS_CUSTOM_LATEST_ID"
-#   scope = "REGIONAL"
-# }
-
-# ── Console-managed IP Sets ───────────────────────────────────
-# data "aws_wafv2_ip_set" "example" {
-#   name  = "EXAMPLE_IP_SET"
-#   id    = "REPLACE_WITH_IP_SET_ID"
-#   scope = "REGIONAL"
-# }
 
 module "waf" {
   source = "../../modules/waf"
@@ -38,9 +21,12 @@ module "waf" {
     sampled_requests_enabled   = true
   }
 
-  # ── Rules ────────────────────────────────────────────────
-  # Populate after running: scripts/discover_waf.sh eu-prod
-  rules = []
+  # ── Rules (defined in *.auto.tfvars files) ───────────────
+  regex_pattern_sets      = var.regex_pattern_sets
+  ip_sets                 = var.ip_sets
+  regex_pattern_set_rules = var.regex_pattern_set_rules
+  ip_set_rules            = var.ip_set_rules
+  rules                   = var.rules
 
   # ── ALB / API GW Associations ────────────────────────────
   association_resource_arns = []
